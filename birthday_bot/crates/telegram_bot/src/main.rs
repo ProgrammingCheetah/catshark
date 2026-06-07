@@ -21,6 +21,8 @@ enum Command {
     AddBirthday(String),
     #[command(description = "show upcoming birthdays: /soon [days] (default 15)")]
     Soon(String),
+    #[command(description = "show this help")]
+    Help,
 }
 
 /// `ChatPort` adapter for the single configured Telegram chat.
@@ -84,6 +86,11 @@ async fn main() {
         },
     ));
 
+    // Register the command list so Telegram offers "/" autocompletion.
+    if let Err(err) = bot.set_my_commands(Command::bot_commands()).await {
+        log::warn!("failed to register bot commands: {err}");
+    }
+
     tokio::spawn(birthday_scheduler(bot.clone(), service.clone(), chat_id));
 
     let handler = dptree::entry()
@@ -126,6 +133,11 @@ async fn handle_command(
     match cmd {
         Command::AddBirthday(args) => handle_add_birthday(bot, msg, args, service).await,
         Command::Soon(args) => handle_soon(bot, msg, args, service).await,
+        Command::Help => {
+            bot.send_message(msg.chat.id, Command::descriptions().to_string())
+                .await?;
+            Ok(())
+        }
     }
 }
 
