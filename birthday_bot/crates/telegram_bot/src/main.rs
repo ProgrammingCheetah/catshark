@@ -112,16 +112,17 @@ async fn main() {
         .await;
 }
 
-fn record_sender(msg: &Message, service: &Service) {
+async fn record_sender(msg: &Message, service: &Service) {
     if let Some(user) = msg.from.as_ref()
         && let Some(username) = user.username.as_ref()
+        && let Err(err) = service.record_username(username, user.id.0).await
     {
-        service.record_username(username, user.id.0);
+        log::warn!("failed to record username for {}: {err}", user.id);
     }
 }
 
 async fn observe_message(msg: Message, service: Service) -> ResponseResult<()> {
-    record_sender(&msg, &service);
+    record_sender(&msg, &service).await;
     Ok(())
 }
 
@@ -131,7 +132,7 @@ async fn handle_command(
     cmd: Command,
     service: Service,
 ) -> ResponseResult<()> {
-    record_sender(&msg, &service);
+    record_sender(&msg, &service).await;
     match cmd {
         Command::AddBirthday(args) => handle_add_birthday(bot, msg, args, service).await,
         Command::RemoveBirthday(args) => handle_remove_birthday(bot, msg, args, service).await,

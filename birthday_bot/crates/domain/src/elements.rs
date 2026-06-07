@@ -70,6 +70,19 @@ pub trait UserRepository {
     async fn remove_birthday(&self, telegram_id: u64) -> Result<bool, RepositoryError>;
 }
 
+/// Maps usernames to Telegram IDs. The chat API offers no reverse lookup, so
+/// callers populate this as they observe users. Usernames are expected
+/// lowercased; normalization is the caller's concern.
+#[async_trait::async_trait]
+pub trait UsernameDirectory {
+    async fn record_username(
+        &self,
+        username: &str,
+        telegram_id: u64,
+    ) -> Result<(), RepositoryError>;
+    async fn resolve_username(&self, username: &str) -> Result<Option<u64>, RepositoryError>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

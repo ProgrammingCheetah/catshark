@@ -1,8 +1,5 @@
-use std::collections::HashMap;
-use std::sync::RwLock;
-
 use chrono::NaiveDate;
-use domain::elements::{RepositoryError, UserRepository};
+use domain::elements::{RepositoryError, UserRepository, UsernameDirectory};
 
 /// Birthdays carry no real year; they are stored anchored to this leap year
 /// so Feb 29 is representable.
@@ -83,30 +80,26 @@ pub struct UpcomingBirthday {
 pub struct BirthdayService<R, C> {
     repo: R,
     chat: C,
-    /// Lowercased usernames -> Telegram IDs, learned from observed messages.
-    /// The Bot API has no username -> id lookup, so we build our own.
-    username_cache: RwLock<HashMap<String, u64>>,
 }
 
 impl<R, C> BirthdayService<R, C>
 where
-    R: UserRepository + Send + Sync,
+    R: UserRepository + UsernameDirectory + Send + Sync,
     C: ChatPort,
 {
     pub fn new(repo: R, chat: C) -> Self {
-        Self {
-            repo,
-            chat,
-            username_cache: RwLock::new(HashMap::new()),
-        }
+        Self { repo, chat }
     }
 
     /// Remembers which Telegram ID a username belongs to.
-    pub fn record_username(&self, username: &str, telegram_id: u64) {
-        self.username_cache
-            .write()
-            .unwrap()
-            .insert(username.to_lowercase(), telegram_id);
+    pub async fn record_username(
+        &self,
+        username: &str,
+        telegram_id: u64,
+    ) -> Result<(), RepositoryError> {
+        self.repo
+            .record_username(&username.to_lowercase(), telegram_id)
+            .await
     }
 
     /// Resolves a target to a Telegram ID and display name, enforcing that
@@ -122,11 +115,9 @@ where
             Target::Username(raw) => {
                 let username = raw.trim_start_matches('@').to_lowercase();
                 let id = self
-                    .username_cache
-                    .read()
-                    .unwrap()
-                    .get(&username)
-                    .copied()
+                    .repo
+                    .resolve_username(&username)
+                    .await?
                     .ok_or(BirthdayError::UnknownUsername(raw))?;
                 (id, format!("@{username}"))
             }
@@ -241,7 +232,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
 
     use persistence::inmemory::InMemoryUserRepository;
 
@@ -335,7 +326,7 @@ mod tests {
     #[tokio::test]
     async fn member_cannot_add_for_someone_else() {
         let service = service(alice_and_bob());
-        service.record_username("bob", BOB);
+        service.record_username("bob", BOB).await.unwrap();
 
         let result = service
             .add_birthday(ALICE, Some(Target::Username("@bob".into())), birthday(6, 6))
@@ -347,7 +338,7 @@ mod tests {
     #[tokio::test]
     async fn admin_adds_for_someone_else() {
         let service = service(alice_and_bob().with_admin(ALICE));
-        service.record_username("bob", BOB);
+        service.record_username("bob", BOB).await.unwrap();
 
         let added = service
             .add_birthday(ALICE, Some(Target::Username("@bob".into())), birthday(6, 6))
@@ -362,7 +353,7 @@ mod tests {
     #[tokio::test]
     async fn targeting_yourself_needs_no_admin() {
         let service = service(alice_and_bob());
-        service.record_username("alice", ALICE);
+        service.record_username("alice", ALICE).await.unwrap();
 
         let added = service
             .add_birthday(ALICE, Some(Target::Username("@alice".into())), birthday(6, 6))
@@ -386,7 +377,7 @@ mod tests {
     #[tokio::test]
     async fn username_resolution_is_case_insensitive() {
         let service = service(alice_and_bob().with_admin(ALICE));
-        service.record_username("Bob", BOB);
+        service.record_username("Bob", BOB).await.unwrap();
 
         let added = service
             .add_birthday(ALICE, Some(Target::Username("@BOB".into())), birthday(6, 6))
@@ -400,7 +391,7 @@ mod tests {
     async fn target_must_be_in_the_chat() {
         const CAROL: u64 = 3;
         let service = service(alice_and_bob().with_admin(ALICE));
-        service.record_username("carol", CAROL);
+        service.record_username("carol", CAROL).await.unwrap();
 
         let result = service
             .add_birthday(ALICE, Some(Target::Username("@carol".into())), birthday(6, 6))
@@ -451,7 +442,7 @@ mod tests {
     #[tokio::test]
     async fn member_cannot_remove_for_someone_else() {
         let service = service(alice_and_bob());
-        service.record_username("bob", BOB);
+        service.record_username("bob", BOB).await.unwrap();
         service.add_birthday(BOB, None, birthday(6, 6)).await.unwrap();
 
         let result = service
@@ -468,7 +459,7 @@ mod tests {
         let repo = InMemoryUserRepository::new();
         repo.add_birthday(CAROL, birthday(6, 6)).await.unwrap();
         let service = BirthdayService::new(repo, alice_and_bob().with_admin(ALICE));
-        service.record_username("carol", CAROL);
+        service.record_username("carol", CAROL).await.unwrap();
 
         let removed = service
             .remove_birthday(ALICE, Some(Target::Username("@carol".into())))

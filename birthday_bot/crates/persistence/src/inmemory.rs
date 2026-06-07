@@ -2,11 +2,12 @@ use std::collections::HashMap;
 use std::sync::RwLock;
 
 use chrono::{NaiveDate, Utc};
-use domain::elements::{User, UserId, UserRepository};
+use domain::elements::{User, UserId, UserRepository, UsernameDirectory};
 
 #[derive(Default)]
 pub struct InMemoryUserRepository {
     users: RwLock<HashMap<UserId, User>>,
+    usernames: RwLock<HashMap<String, u64>>,
 }
 
 impl InMemoryUserRepository {
@@ -81,6 +82,28 @@ impl UserRepository for InMemoryUserRepository {
             .find(|(_, user)| user.telegram_id == telegram_id)
             .map(|(key, _)| *key);
         Ok(key.is_some_and(|key| users.remove(&key).is_some()))
+    }
+}
+
+#[async_trait::async_trait]
+impl UsernameDirectory for InMemoryUserRepository {
+    async fn record_username(
+        &self,
+        username: &str,
+        telegram_id: u64,
+    ) -> Result<(), domain::elements::RepositoryError> {
+        self.usernames
+            .write()
+            .unwrap()
+            .insert(username.to_string(), telegram_id);
+        Ok(())
+    }
+
+    async fn resolve_username(
+        &self,
+        username: &str,
+    ) -> Result<Option<u64>, domain::elements::RepositoryError> {
+        Ok(self.usernames.read().unwrap().get(username).copied())
     }
 }
 
