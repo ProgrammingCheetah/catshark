@@ -386,6 +386,38 @@ fn next_wakeup(now: DateTime<Utc>, target_time: NaiveTime) -> DateTime<Utc> {
     }
 }
 
+async fn post_birthday_wishes(
+    bot: &Bot,
+    service: &Service,
+    chat_id: ChatId,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let today = Utc::now().date_naive();
+    let celebrants = service.todays_celebrants(today).await?;
+
+    if celebrants.is_empty() {
+        log::info!("no birthdays to celebrate today");
+        return Ok(());
+    }
+
+    bot.send_message(chat_id, birthday_message(&celebrants))
+        .parse_mode(ParseMode::Html)
+        .await?;
+    Ok(())
+}
+
+/// The daily greeting, pinging every celebrant: an @mention for members with
+/// a username, an HTML text mention for the rest (hence HTML parse mode).
+fn birthday_message(celebrants: &[ChatMemberInfo]) -> String {
+    let mentions: Vec<String> = celebrants
+        .iter()
+        .map(|member| match &member.username {
+            Some(username) => format!("@{username}"),
+            None => html::user_mention(UserId(member.telegram_id), &member.full_name),
+        })
+        .collect();
+    format!("🎉 Happy birthday, {}! 🎂🎈", mentions.join(", "))
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::TimeZone;
@@ -508,36 +540,4 @@ mod tests {
              🎂 11 June — Carol (in 5 days)"
         );
     }
-}
-
-async fn post_birthday_wishes(
-    bot: &Bot,
-    service: &Service,
-    chat_id: ChatId,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let today = Utc::now().date_naive();
-    let celebrants = service.todays_celebrants(today).await?;
-
-    if celebrants.is_empty() {
-        log::info!("no birthdays to celebrate today");
-        return Ok(());
-    }
-
-    bot.send_message(chat_id, birthday_message(&celebrants))
-        .parse_mode(ParseMode::Html)
-        .await?;
-    Ok(())
-}
-
-/// The daily greeting, pinging every celebrant: an @mention for members with
-/// a username, an HTML text mention for the rest (hence HTML parse mode).
-fn birthday_message(celebrants: &[ChatMemberInfo]) -> String {
-    let mentions: Vec<String> = celebrants
-        .iter()
-        .map(|member| match &member.username {
-            Some(username) => format!("@{username}"),
-            None => html::user_mention(UserId(member.telegram_id), &member.full_name),
-        })
-        .collect();
-    format!("🎉 Happy birthday, {}! 🎂🎈", mentions.join(", "))
 }

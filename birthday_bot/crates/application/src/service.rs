@@ -252,6 +252,8 @@ mod tests {
     struct FakeChat {
         members: HashMap<u64, ChatMemberInfo>,
         admins: HashSet<u64>,
+        /// When set, every chat API call fails.
+        broken: bool,
     }
 
     impl FakeChat {
@@ -271,6 +273,19 @@ mod tests {
             self.admins.insert(id);
             self
         }
+
+        fn broken(mut self) -> Self {
+            self.broken = true;
+            self
+        }
+
+        fn check(&self) -> Result<(), ChatError> {
+            if self.broken {
+                Err(ChatError("chat API down".to_string()))
+            } else {
+                Ok(())
+            }
+        }
     }
 
     #[async_trait::async_trait]
@@ -279,10 +294,12 @@ mod tests {
             &self,
             telegram_id: u64,
         ) -> Result<Option<ChatMemberInfo>, ChatError> {
+            self.check()?;
             Ok(self.members.get(&telegram_id).cloned())
         }
 
         async fn is_admin(&self, telegram_id: u64) -> Result<bool, ChatError> {
+            self.check()?;
             Ok(self.admins.contains(&telegram_id))
         }
     }
@@ -505,6 +522,48 @@ mod tests {
         assert_eq!(ids, vec![BOB, ALICE]);
         assert_eq!(upcoming[0].date, date(2026, 6, 8));
         assert_eq!(upcoming[1].date, date(2026, 6, 10));
+    }
+
+    #[tokio::test]
+    async fn failed_admin_lookup_fails_closed() {
+        // Alice IS an admin, but the chat API cannot confirm it.
+        let service = service(alice_and_bob().with_admin(ALICE).broken());
+        service.record_username("bob", BOB).await.unwrap();
+
+        let result = service
+            .add_birthday(ALICE, Some(Target::Username("@bob".into())), birthday(6, 6))
+            .await;
+
+        assert_eq!(result, Err(BirthdayError::NotAdmin));
+    }
+
+    #[tokio::test]
+    async fn chat_errors_skip_users_in_listings_instead_of_failing() {
+        let repo = InMemoryUserRepository::new();
+        repo.add_birthday(ALICE, birthday(6, 6)).await.unwrap();
+        let service = BirthdayService::new(repo, alice_and_bob().broken());
+
+        let celebrants = service.todays_celebrants(date(2026, 6, 6)).await.unwrap();
+        assert!(celebrants.is_empty());
+
+        let upcoming = service.upcoming_birthdays(date(2026, 6, 1), 15).await.unwrap();
+        assert!(upcoming.is_empty());
+    }
+
+    #[tokio::test]
+    async fn huge_horizons_list_each_member_once_with_the_soonest_date() {
+        let service = service(alice_and_bob());
+        service.add_birthday(ALICE, None, birthday(6, 6)).await.unwrap();
+
+        // Far beyond MAX_SOON_DAYS; a yearly birthday recurs many times in
+        // 10,000 days but must appear once, at its next occurrence.
+        let upcoming = service
+            .upcoming_birthdays(date(2026, 6, 7), 10_000)
+            .await
+            .unwrap();
+
+        assert_eq!(upcoming.len(), 1);
+        assert_eq!(upcoming[0].date, date(2027, 6, 6));
     }
 
     #[tokio::test]

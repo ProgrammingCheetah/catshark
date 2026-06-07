@@ -266,6 +266,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn upsert_preserves_identity_and_creation_time() {
+        let store = store().await;
+        store.add_birthday(1, date(2000, 6, 6)).await.unwrap();
+        let before = store
+            .find_birthdays_for_date(date(2026, 6, 6))
+            .await
+            .unwrap()[0]
+            .clone();
+
+        store.add_birthday(1, date(2000, 7, 7)).await.unwrap();
+        let after = store
+            .find_birthdays_for_date(date(2026, 7, 7))
+            .await
+            .unwrap()[0]
+            .clone();
+
+        assert_eq!(after.id, before.id);
+        assert_eq!(after.created_at, before.created_at);
+        assert_eq!(after.birthdate, date(2000, 7, 7));
+    }
+
+    #[tokio::test]
+    async fn feb_29_birthdate_roundtrips() {
+        let store = store().await;
+        store.add_birthday(1, date(2000, 2, 29)).await.unwrap();
+
+        // Celebrated on Feb 28 in non-leap years...
+        let found = store
+            .find_birthdays_for_date(date(2025, 2, 28))
+            .await
+            .unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].birthdate, date(2000, 2, 29));
+
+        // ...and only on the real date in leap years.
+        assert!(
+            store
+                .find_birthdays_for_date(date(2024, 2, 28))
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            store
+                .find_birthdays_for_date(date(2024, 2, 29))
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
     async fn within_sorts_soonest_first_and_wraps_the_year() {
         let store = store().await;
         store.add_birthday(1, date(2000, 1, 2)).await.unwrap();
