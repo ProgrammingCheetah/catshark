@@ -185,6 +185,8 @@ async fn handle_command(
         Command::Soon(args) => handle_soon(bot, msg, args, service).await,
         Command::Ping => {
             bot.send_message(msg.chat.id, "pong 🏓").await?;
+            // The send succeeded, so the probe round-trip is confirmed.
+            tracing::info!("pong sent");
             Ok(())
         }
         Command::Help => {
