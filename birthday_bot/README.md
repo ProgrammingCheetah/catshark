@@ -62,6 +62,25 @@ date of the last daily greeting — so a bot that was down at greeting time
 catches up when it comes back, and a restart later the same day doesn't
 greet twice.
 
+## Run with Docker
+
+```sh
+cp .env.example .env   # fill in TELOXIDE_TOKEN and CHAT_ID
+docker compose up -d --build
+docker compose logs -f
+```
+
+Works identically with podman (`podman compose ...`). The database lives on
+the `bot-data` volume, so `docker compose down` and image rebuilds keep it;
+only deleting the volume loses it. To back it up:
+
+```sh
+docker compose cp birthday-bot:/data/birthdays.db ./birthdays-backup.db
+```
+
+The container runs as a non-root user, needs no inbound ports (long
+polling), and must be the only instance running against the token.
+
 ## Architecture
 
 A small hexagonal workspace:

@@ -1,0 +1,9 @@
+# Build artifacts: gigabytes that would otherwise upload as build context.
+target
+
+# Secrets and local state: reach the container via env_file/volumes, never
+# baked into the image.
+.env
+*.db
+*.db-wal
+*.db-shm

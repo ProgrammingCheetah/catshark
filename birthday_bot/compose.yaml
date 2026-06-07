@@ -1,0 +1,18 @@
+services:
+  birthday-bot:
+    build: .
+    restart: unless-stopped
+    # SIGINT triggers the bot's graceful shutdown handler (teloxide's
+    # ctrl-c handling); SQLite is WAL-journaled either way.
+    stop_signal: SIGINT
+    # TELOXIDE_TOKEN and CHAT_ID, plus optional BIRTHDAY_HOUR_UTC/RUST_LOG.
+    env_file: .env
+    environment:
+      # Inside the container the database always lives on the volume,
+      # regardless of any DB_PATH in .env.
+      DB_PATH: /data/birthdays.db
+    volumes:
+      - bot-data:/data
+
+volumes:
+  bot-data:
