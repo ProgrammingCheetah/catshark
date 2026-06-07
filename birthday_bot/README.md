@@ -14,6 +14,7 @@ are celebrated on Feb 28 in non-leap years.
 | `/add_birthday MM-DD [@username]` | Save your birthday — or, as a chat admin, someone else's |
 | `/remove_birthday [@username]` | Remove your birthday — or, as a chat admin, someone else's |
 | `/soon [days]` | Upcoming birthdays in the next `days` days (default 15) |
+| `/ping` | Check that the bot is alive |
 | `/help` | Show the command list |
 
 Rules of the house:

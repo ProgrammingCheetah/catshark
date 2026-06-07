@@ -23,6 +23,8 @@ enum Command {
     RemoveBirthday(String),
     #[command(description = "show upcoming birthdays: /soon [days] (default 15)")]
     Soon(String),
+    #[command(description = "check that the bot is alive")]
+    Ping,
     #[command(description = "show this help")]
     Help,
 }
@@ -147,6 +149,10 @@ async fn handle_command(
         Command::AddBirthday(args) => handle_add_birthday(bot, msg, args, service).await,
         Command::RemoveBirthday(args) => handle_remove_birthday(bot, msg, args, service).await,
         Command::Soon(args) => handle_soon(bot, msg, args, service).await,
+        Command::Ping => {
+            bot.send_message(msg.chat.id, "pong 🏓").await?;
+            Ok(())
+        }
         Command::Help => {
             bot.send_message(msg.chat.id, Command::descriptions().to_string())
                 .await?;
