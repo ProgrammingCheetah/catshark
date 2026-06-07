@@ -55,7 +55,7 @@ cargo run -p telegram_bot
 | `CHAT_ID` | yes | — | The group chat the bot serves |
 | `BIRTHDAY_HOUR_UTC` | no | `9` | Hour of day (UTC, 0–23) for the daily greeting |
 | `DB_PATH` | no | `birthdays.db` | SQLite database file |
-| `RUST_LOG` | no | `info` | Log filter; `info` is a clean audit trail (saves, removals, denials, daily greetings), `debug` adds decisions and SQL statements, `trace` adds per-message username observation |
+| `RUST_LOG` | no | `info` | Log filter; `info` is a clean audit trail (every command received with chat and user id, saves, removals, denials, daily greetings), `debug` adds decisions, unrecognized commands and SQL statements, `trace` adds per-message username observation |
 
 Data lives in a single SQLite file: birthdays, learned usernames, and the
 date of the last daily greeting — so a bot that was down at greeting time

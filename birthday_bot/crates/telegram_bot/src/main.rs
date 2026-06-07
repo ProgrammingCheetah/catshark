@@ -145,6 +145,18 @@ async fn record_sender(msg: &Message, service: &Service) {
 }
 
 async fn observe_message(msg: Message, service: Service) -> ResponseResult<()> {
+    // A command-like message that matched no known command (a typo, or a
+    // command for another bot) would otherwise vanish without a trace.
+    if let Some(text) = msg.text()
+        && text.starts_with('/')
+    {
+        tracing::debug!(
+            chat_id = msg.chat.id.0,
+            user_id = msg.from.as_ref().map(|user| user.id.0),
+            text,
+            "unrecognized command-like message"
+        );
+    }
     record_sender(&msg, &service).await;
     Ok(())
 }
@@ -163,18 +175,19 @@ async fn handle_command(
     cmd: Command,
     service: Service,
 ) -> ResponseResult<()> {
+    // One unconditional line per incoming command; the surrounding span puts
+    // chat_id, user_id and the command itself on it.
+    tracing::info!("command received");
     record_sender(&msg, &service).await;
     match cmd {
         Command::AddBirthday(args) => handle_add_birthday(bot, msg, args, service).await,
         Command::RemoveBirthday(args) => handle_remove_birthday(bot, msg, args, service).await,
         Command::Soon(args) => handle_soon(bot, msg, args, service).await,
         Command::Ping => {
-            tracing::debug!("ping");
             bot.send_message(msg.chat.id, "pong 🏓").await?;
             Ok(())
         }
         Command::Help => {
-            tracing::debug!("help requested");
             bot.send_message(msg.chat.id, Command::descriptions().to_string())
                 .await?;
             Ok(())
