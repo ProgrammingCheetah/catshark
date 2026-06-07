@@ -33,12 +33,42 @@ impl SqliteStore {
             CREATE TABLE IF NOT EXISTS usernames (
                 username TEXT PRIMARY KEY,
                 telegram_id INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS bot_state (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
             );",
         )
         .map_err(storage_error)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
+    }
+
+    /// The date the daily birthday announcement last completed (it counts
+    /// even when nobody celebrates), used to catch up after downtime.
+    pub async fn last_announced(&self) -> Result<Option<NaiveDate>, RepositoryError> {
+        self.with_conn(|conn| {
+            conn.query_row(
+                "SELECT value FROM bot_state WHERE key = 'last_announced'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+        })
+        .await
+    }
+
+    pub async fn set_last_announced(&self, date: NaiveDate) -> Result<(), RepositoryError> {
+        self.with_conn(move |conn| {
+            conn.execute(
+                "INSERT INTO bot_state (key, value) VALUES ('last_announced', ?1)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [date],
+            )
+            .map(|_| ())
+        })
+        .await
     }
 
     /// Runs a query on the blocking thread pool, since rusqlite is synchronous.
@@ -268,6 +298,24 @@ mod tests {
                 .is_empty()
         );
         assert!(!store.remove_birthday(1).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn last_announced_roundtrips() {
+        let store = store();
+        assert_eq!(store.last_announced().await.unwrap(), None);
+
+        store.set_last_announced(date(2026, 6, 6)).await.unwrap();
+        assert_eq!(
+            store.last_announced().await.unwrap(),
+            Some(date(2026, 6, 6))
+        );
+
+        store.set_last_announced(date(2026, 6, 7)).await.unwrap();
+        assert_eq!(
+            store.last_announced().await.unwrap(),
+            Some(date(2026, 6, 7))
+        );
     }
 
     #[tokio::test]

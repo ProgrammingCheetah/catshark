@@ -84,7 +84,7 @@ async fn main() {
     let store = SqliteStore::open(&db_path).expect("failed to open the birthday database");
 
     let service: Service = Arc::new(BirthdayService::new(
-        store,
+        store.clone(),
         TelegramChat {
             bot: bot.clone(),
             chat_id,
@@ -96,7 +96,12 @@ async fn main() {
         log::warn!("failed to register bot commands: {err}");
     }
 
-    tokio::spawn(birthday_scheduler(bot.clone(), service.clone(), chat_id));
+    tokio::spawn(birthday_scheduler(
+        bot.clone(),
+        service.clone(),
+        store,
+        chat_id,
+    ));
 
     let handler = dptree::entry()
         .branch(
@@ -306,8 +311,11 @@ async fn handle_soon(bot: Bot, msg: Message, args: String, service: Service) -> 
     Ok(())
 }
 
-/// Runs forever, posting birthday wishes once a day at `BIRTHDAY_HOUR_UTC` (default 9:00 UTC).
-async fn birthday_scheduler(bot: Bot, service: Service, chat_id: ChatId) {
+/// Runs forever, posting birthday wishes once a day at `BIRTHDAY_HOUR_UTC`
+/// (default 9:00 UTC). The last announcement date is persisted, so a bot that
+/// was down when the hour struck catches up as soon as it comes back instead
+/// of skipping the day, and a restart later the same day does not repeat it.
+async fn birthday_scheduler(bot: Bot, service: Service, store: SqliteStore, chat_id: ChatId) {
     let hour = std::env::var("BIRTHDAY_HOUR_UTC")
         .ok()
         .and_then(|hour| hour.parse().ok())
@@ -316,16 +324,36 @@ async fn birthday_scheduler(bot: Bot, service: Service, chat_id: ChatId) {
 
     loop {
         let now = Utc::now();
-        let mut next_run = now.date_naive().and_time(target_time).and_utc();
-        if next_run <= now {
-            next_run += chrono::Duration::days(1);
+        let today = now.date_naive();
+        let due = today.and_time(target_time).and_utc();
+
+        let announced = match store.last_announced().await {
+            Ok(date) => date,
+            Err(err) => {
+                log::warn!("failed to read the last announcement date: {err}");
+                None
+            }
+        };
+        if now >= due && announced.is_none_or(|date| date < today) {
+            match post_birthday_wishes(&bot, &service, chat_id).await {
+                Ok(()) => {
+                    if let Err(err) = store.set_last_announced(today).await {
+                        log::warn!("failed to record the announcement date: {err}");
+                    }
+                }
+                Err(err) => log::error!("failed to post birthday wishes: {err}"),
+            }
         }
+
+        // Always sleep to the next boundary; the check above decides whether
+        // anything is due when we wake.
+        let next_run = if now < due {
+            due
+        } else {
+            due + chrono::Duration::days(1)
+        };
         log::info!("next birthday check at {next_run}");
         tokio::time::sleep((next_run - now).to_std().unwrap_or_default()).await;
-
-        if let Err(err) = post_birthday_wishes(&bot, &service, chat_id).await {
-            log::error!("failed to post birthday wishes: {err}");
-        }
     }
 }
 
