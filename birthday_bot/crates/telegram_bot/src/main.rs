@@ -216,6 +216,9 @@ async fn handle_add_birthday(
         Err(BirthdayError::NotInChat(name)) => {
             format!("{name} doesn't seem to be in the chat.")
         }
+        Err(BirthdayError::ActorNotInChat) => {
+            "You need to be a member of the chat to save your birthday.".to_string()
+        }
         Err(BirthdayError::NotAdmin) => "Only chat admins can add birthdays for other people. \
              You can add your own with /add_birthday MM-DD"
             .to_string(),

@@ -63,6 +63,8 @@ pub enum BirthdayError {
     UnknownUsername(String),
     #[error("{0} is not in the chat")]
     NotInChat(String),
+    #[error("the actor is not in the chat")]
+    ActorNotInChat,
     #[error("only admins may manage birthdays for others")]
     NotAdmin,
     #[error(transparent)]
@@ -130,7 +132,9 @@ where
     }
 
     /// Adds a birthday for the actor themselves (no target) or, if the actor
-    /// is a chat admin, for another chat member.
+    /// is a chat admin, for another chat member. Either way the person whose
+    /// birthday it is must be in the chat — strangers messaging the bot
+    /// directly should not end up in the database.
     pub async fn add_birthday(
         &self,
         actor_id: u64,
@@ -138,6 +142,9 @@ where
         birthdate: NaiveDate,
     ) -> Result<Added, BirthdayError> {
         let Some(target) = target else {
+            if self.chat.present_member(actor_id).await?.is_none() {
+                return Err(BirthdayError::ActorNotInChat);
+            }
             self.repo.add_birthday(actor_id, birthdate).await?;
             return Ok(Added::ForSelf);
         };
@@ -324,6 +331,16 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn non_member_cannot_add_their_own_birthday() {
+        const CAROL: u64 = 3;
+        let service = service(alice_and_bob());
+
+        let result = service.add_birthday(CAROL, None, birthday(6, 6)).await;
+
+        assert_eq!(result, Err(BirthdayError::ActorNotInChat));
+    }
+
+    #[tokio::test]
     async fn member_cannot_add_for_someone_else() {
         let service = service(alice_and_bob());
         service.record_username("bob", BOB).await.unwrap();
@@ -475,11 +492,12 @@ mod tests {
     #[tokio::test]
     async fn upcoming_is_sorted_and_skips_users_who_left() {
         const CAROL: u64 = 3;
-        let service = service(alice_and_bob());
+        // Carol saved a birthday while she was in the chat, then left.
+        let repo = InMemoryUserRepository::new();
+        repo.add_birthday(CAROL, birthday(6, 9)).await.unwrap();
+        let service = BirthdayService::new(repo, alice_and_bob());
         service.add_birthday(ALICE, None, birthday(6, 10)).await.unwrap();
         service.add_birthday(BOB, None, birthday(6, 8)).await.unwrap();
-        // Carol saved a birthday but is not in the chat (anymore).
-        service.add_birthday(CAROL, None, birthday(6, 9)).await.unwrap();
 
         let upcoming = service.upcoming_birthdays(date(2026, 6, 6), 15).await.unwrap();
 
