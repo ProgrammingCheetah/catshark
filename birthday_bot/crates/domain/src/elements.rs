@@ -22,9 +22,6 @@ impl From<Uuid> for UserId {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct TelegramId(u64);
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct User {
     pub id: UserId,
