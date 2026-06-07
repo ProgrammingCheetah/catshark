@@ -40,10 +40,8 @@ impl UserRepository for InMemoryUserRepository {
         let mut upcoming: Vec<(NaiveDate, User)> = users
             .values()
             .filter_map(|user| {
-                (0..=u64::from(days)).find_map(|offset| {
-                    let date = from.checked_add_days(chrono::Days::new(offset))?;
-                    user.celebrates_on(date).then(|| (date, user.clone()))
-                })
+                user.celebration_within(from, days)
+                    .map(|date| (date, user.clone()))
             })
             .collect();
         upcoming.sort_by_key(|(date, _)| *date);

@@ -5,14 +5,14 @@ use application::service::{
     DEFAULT_SOON_DAYS, MAX_SOON_DAYS, Removed, Target, parse_birthday,
 };
 use chrono::{NaiveTime, Utc};
-use persistence::inmemory::InMemoryUserRepository;
+use persistence::sqlite::SqliteStore;
 use teloxide::prelude::*;
 use teloxide::types::{MessageEntityKind, ParseMode, UserId};
 use teloxide::utils::command::BotCommands;
 use teloxide::utils::html;
 use teloxide::{ApiError, RequestError};
 
-type Service = Arc<BirthdayService<InMemoryUserRepository, TelegramChat>>;
+type Service = Arc<BirthdayService<SqliteStore, TelegramChat>>;
 
 #[derive(BotCommands, Clone)]
 #[command(rename_rule = "snake_case", description = "Birthday bot commands:")]
@@ -80,8 +80,11 @@ async fn main() {
             .expect("CHAT_ID must be a valid integer"),
     );
 
+    let db_path = std::env::var("DB_PATH").unwrap_or_else(|_| "birthdays.db".to_string());
+    let store = SqliteStore::open(&db_path).expect("failed to open the birthday database");
+
     let service: Service = Arc::new(BirthdayService::new(
-        InMemoryUserRepository::new(),
+        store,
         TelegramChat {
             bot: bot.clone(),
             chat_id,

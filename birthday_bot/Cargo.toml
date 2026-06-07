@@ -7,6 +7,8 @@ chrono = { version = "0.4.45" }
 uuid = { version = "1.23.2", features = ["v7", "std"] }
 thiserror = { version = "2.0.18", features = ["std"] }
 async-trait = { version = "0.1.89" }
+# 0.40 pulls a libsqlite3-sys that needs Rust >= 1.95 (cfg_select).
+rusqlite = { version = "0.39", features = ["bundled", "chrono"] }
 teloxide = { version = "0.17.0", features = ["macros"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 log = { version = "0.4" }

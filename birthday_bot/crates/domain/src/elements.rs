@@ -1,11 +1,20 @@
 use chrono::{DateTime, Datelike, NaiveDate, Utc};
 use uuid::Uuid;
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum RepositoryError {}
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum RepositoryError {
+    #[error("storage error: {0}")]
+    Storage(String),
+}
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct UserId(Uuid);
+
+impl UserId {
+    pub fn as_uuid(&self) -> Uuid {
+        self.0
+    }
+}
 
 impl From<Uuid> for UserId {
     fn from(value: Uuid) -> Self {
@@ -37,6 +46,15 @@ impl User {
         }
         let is_leap_year = NaiveDate::from_ymd_opt(date.year(), 2, 29).is_some();
         (birth_month, birth_day) == (2, 29) && (date.month(), date.day()) == (2, 28) && !is_leap_year
+    }
+
+    /// The date within `from..=from + days` on which this user's birthday is
+    /// celebrated, if any.
+    pub fn celebration_within(&self, from: NaiveDate, days: u32) -> Option<NaiveDate> {
+        (0..=u64::from(days)).find_map(|offset| {
+            let date = from.checked_add_days(chrono::Days::new(offset))?;
+            self.celebrates_on(date).then_some(date)
+        })
     }
 
     pub fn new(id: UserId, telegram_id: u64, birthdate: NaiveDate) -> Self {
@@ -128,5 +146,21 @@ mod tests {
         assert!(user.celebrates_on(date(2024, 2, 28)));
         assert!(user.celebrates_on(date(2025, 2, 28)));
         assert!(!user.celebrates_on(date(2024, 2, 29)));
+    }
+
+    #[test]
+    fn celebration_within_finds_the_first_matching_date() {
+        let user = user_born_on(2, 29);
+        // Non-leap year: celebrated on Feb 28.
+        assert_eq!(
+            user.celebration_within(date(2025, 2, 20), 15),
+            Some(date(2025, 2, 28))
+        );
+        // Leap year: celebrated on the real date.
+        assert_eq!(
+            user.celebration_within(date(2028, 2, 20), 15),
+            Some(date(2028, 2, 29))
+        );
+        assert_eq!(user.celebration_within(date(2025, 3, 1), 15), None);
     }
 }
