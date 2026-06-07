@@ -1,0 +1,15 @@
+[package]
+name = "telegram_bot"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+application = { path = "../application" }
+persistence = { path = "../persistence" }
+chrono = { workspace = true }
+async-trait = { workspace = true }
+teloxide = { workspace = true }
+tokio = { workspace = true }
+log = { workspace = true }
+pretty_env_logger = { workspace = true }
+dotenvy = { workspace = true }

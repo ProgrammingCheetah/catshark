@@ -1,0 +1,14 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.dependencies]
+chrono = { version = "0.4.45" }
+uuid = { version = "1.23.2", features = ["v7", "std"] }
+thiserror = { version = "2.0.18", features = ["std"] }
+async-trait = { version = "0.1.89" }
+teloxide = { version = "0.17.0", features = ["macros"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+log = { version = "0.4" }
+pretty_env_logger = { version = "0.5" }
+dotenvy = { version = "0.15" }
