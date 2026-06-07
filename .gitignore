@@ -26,3 +26,8 @@ rust-project.json
 # Local environment variables (bot token, chat id)
 .env
 
+# Runtime SQLite database (and WAL sidecars)
+*.db
+*.db-wal
+*.db-shm
+

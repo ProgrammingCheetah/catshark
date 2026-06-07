@@ -8,5 +8,7 @@ domain = { path = "../domain" }
 chrono = { workspace = true }
 async-trait = { workspace = true }
 uuid = { workspace = true }
-rusqlite = { workspace = true }
+sqlx = { workspace = true }
+
+[dev-dependencies]
 tokio = { workspace = true }

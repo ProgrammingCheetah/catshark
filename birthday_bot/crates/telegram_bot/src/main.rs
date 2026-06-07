@@ -81,7 +81,9 @@ async fn main() {
     );
 
     let db_path = std::env::var("DB_PATH").unwrap_or_else(|_| "birthdays.db".to_string());
-    let store = SqliteStore::open(&db_path).expect("failed to open the birthday database");
+    let store = SqliteStore::open(&db_path)
+        .await
+        .expect("failed to open the birthday database");
 
     let service: Service = Arc::new(BirthdayService::new(
         store.clone(),
