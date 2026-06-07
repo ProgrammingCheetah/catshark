@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use application::service::{
     Added, BirthdayError, BirthdayService, ChatError, ChatMemberInfo, ChatPort,
-    DEFAULT_SOON_DAYS, MAX_SOON_DAYS, Removed, Target, parse_birthday,
+    DEFAULT_SOON_DAYS, MAX_SOON_DAYS, Removed, Target, UpcomingBirthday, parse_birthday,
 };
-use chrono::{NaiveTime, Utc};
+use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 use persistence::sqlite::SqliteStore;
 use teloxide::prelude::*;
 use teloxide::types::{MessageEntityKind, ParseMode, UserId};
@@ -290,6 +290,17 @@ async fn handle_soon(bot: Bot, msg: Message, args: String, service: Service) -> 
         }
     };
 
+    bot.send_message(msg.chat.id, soon_message(today, days, &upcoming))
+        .await?;
+    Ok(())
+}
+
+/// The `/soon` reply. Plain names on purpose: a list shouldn't ping everyone
+/// in it.
+fn soon_message(today: NaiveDate, days: u32, upcoming: &[UpcomingBirthday]) -> String {
+    if upcoming.is_empty() {
+        return format!("No birthdays in the next {days} days.");
+    }
     let lines: Vec<String> = upcoming
         .iter()
         .map(|entry| {
@@ -298,7 +309,6 @@ async fn handle_soon(bot: Bot, msg: Message, args: String, service: Service) -> 
                 1 => "tomorrow".to_string(),
                 n => format!("in {n} days"),
             };
-            // Plain names on purpose: a list shouldn't ping everyone in it.
             format!(
                 "🎂 {} — {} ({when})",
                 entry.date.format("%d %B"),
@@ -306,14 +316,7 @@ async fn handle_soon(bot: Bot, msg: Message, args: String, service: Service) -> 
             )
         })
         .collect();
-
-    let reply = if lines.is_empty() {
-        format!("No birthdays in the next {days} days.")
-    } else {
-        format!("Birthdays in the next {days} days:\n{}", lines.join("\n"))
-    };
-    bot.send_message(msg.chat.id, reply).await?;
-    Ok(())
+    format!("Birthdays in the next {days} days:\n{}", lines.join("\n"))
 }
 
 /// Runs forever, posting birthday wishes once a day at `BIRTHDAY_HOUR_UTC`
@@ -329,8 +332,6 @@ async fn birthday_scheduler(bot: Bot, service: Service, store: SqliteStore, chat
 
     loop {
         let now = Utc::now();
-        let today = now.date_naive();
-        let due = today.and_time(target_time).and_utc();
 
         let announced = match store.last_announced().await {
             Ok(date) => date,
@@ -339,10 +340,10 @@ async fn birthday_scheduler(bot: Bot, service: Service, store: SqliteStore, chat
                 None
             }
         };
-        if now >= due && announced.is_none_or(|date| date < today) {
+        if announcement_due(now, target_time, announced) {
             match post_birthday_wishes(&bot, &service, chat_id).await {
                 Ok(()) => {
-                    if let Err(err) = store.set_last_announced(today).await {
+                    if let Err(err) = store.set_last_announced(now.date_naive()).await {
                         log::warn!("failed to record the announcement date: {err}");
                     }
                 }
@@ -352,13 +353,160 @@ async fn birthday_scheduler(bot: Bot, service: Service, store: SqliteStore, chat
 
         // Always sleep to the next boundary; the check above decides whether
         // anything is due when we wake.
-        let next_run = if now < due {
-            due
-        } else {
-            due + chrono::Duration::days(1)
-        };
+        let next_run = next_wakeup(now, target_time);
         log::info!("next birthday check at {next_run}");
         tokio::time::sleep((next_run - now).to_std().unwrap_or_default()).await;
+    }
+}
+
+/// Today's strike of the announcement hour.
+fn todays_due_time(now: DateTime<Utc>, target_time: NaiveTime) -> DateTime<Utc> {
+    now.date_naive().and_time(target_time).and_utc()
+}
+
+/// Whether today's announcement is still owed: the hour has struck and the
+/// last completed announcement was on an earlier day (or never).
+fn announcement_due(
+    now: DateTime<Utc>,
+    target_time: NaiveTime,
+    last_announced: Option<NaiveDate>,
+) -> bool {
+    now >= todays_due_time(now, target_time)
+        && last_announced.is_none_or(|date| date < now.date_naive())
+}
+
+/// When to wake next: today's announcement hour if it is still ahead,
+/// otherwise tomorrow's.
+fn next_wakeup(now: DateTime<Utc>, target_time: NaiveTime) -> DateTime<Utc> {
+    let due = todays_due_time(now, target_time);
+    if now < due {
+        due
+    } else {
+        due + chrono::Duration::days(1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::TimeZone;
+
+    use super::*;
+
+    fn member(id: u64, username: Option<&str>, name: &str) -> ChatMemberInfo {
+        ChatMemberInfo {
+            telegram_id: id,
+            username: username.map(str::to_string),
+            full_name: name.to_string(),
+        }
+    }
+
+    fn date(year: i32, month: u32, day: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(year, month, day).unwrap()
+    }
+
+    fn at(year: i32, month: u32, day: u32, hour: u32) -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(year, month, day, hour, 0, 0).unwrap()
+    }
+
+    fn nine() -> NaiveTime {
+        NaiveTime::from_hms_opt(9, 0, 0).unwrap()
+    }
+
+    #[test]
+    fn announcement_waits_for_the_hour() {
+        assert!(!announcement_due(at(2026, 6, 6, 8), nine(), None));
+        assert!(announcement_due(at(2026, 6, 6, 9), nine(), None));
+    }
+
+    #[test]
+    fn announcement_catches_up_after_downtime() {
+        // Down at 9:00, back at 15:00: still owed, whether the last run was
+        // yesterday or never.
+        assert!(announcement_due(
+            at(2026, 6, 6, 15),
+            nine(),
+            Some(date(2026, 6, 5))
+        ));
+        assert!(announcement_due(at(2026, 6, 6, 15), nine(), None));
+    }
+
+    #[test]
+    fn restart_after_announcing_does_not_repeat() {
+        assert!(!announcement_due(
+            at(2026, 6, 6, 15),
+            nine(),
+            Some(date(2026, 6, 6))
+        ));
+    }
+
+    #[test]
+    fn next_wakeup_is_todays_hour_or_tomorrows() {
+        assert_eq!(next_wakeup(at(2026, 6, 6, 8), nine()), at(2026, 6, 6, 9));
+        // At or past the hour, the next wake-up is tomorrow; the due check
+        // for today already ran this iteration.
+        assert_eq!(next_wakeup(at(2026, 6, 6, 9), nine()), at(2026, 6, 7, 9));
+        assert_eq!(next_wakeup(at(2026, 6, 6, 23), nine()), at(2026, 6, 7, 9));
+    }
+
+    #[test]
+    fn birthday_message_mentions_by_username_when_available() {
+        let message = birthday_message(&[member(1, Some("alice"), "Alice")]);
+        assert_eq!(message, "🎉 Happy birthday, @alice! 🎂🎈");
+    }
+
+    #[test]
+    fn birthday_message_text_mentions_and_escapes_usernameless_members() {
+        let message = birthday_message(&[member(2, None, "Bobby <3")]);
+        assert!(message.contains("tg://user"), "{message}");
+        assert!(message.contains("id=2"), "{message}");
+        // The message is sent with HTML parse mode; names must be escaped.
+        assert!(message.contains("Bobby &lt;3"), "{message}");
+    }
+
+    #[test]
+    fn birthday_message_lists_all_celebrants() {
+        let message = birthday_message(&[
+            member(1, Some("alice"), "Alice"),
+            member(2, Some("bob"), "Bob"),
+        ]);
+        assert_eq!(message, "🎉 Happy birthday, @alice, @bob! 🎂🎈");
+    }
+
+    #[test]
+    fn soon_message_reports_an_empty_horizon() {
+        assert_eq!(
+            soon_message(date(2026, 6, 6), 15, &[]),
+            "No birthdays in the next 15 days."
+        );
+    }
+
+    #[test]
+    fn soon_message_words_each_distance_naturally() {
+        let today = date(2026, 6, 6);
+        let upcoming = [
+            UpcomingBirthday {
+                date: today,
+                member: member(1, Some("alice"), "Alice"),
+            },
+            UpcomingBirthday {
+                date: date(2026, 6, 7),
+                member: member(2, Some("bob"), "Bob"),
+            },
+            UpcomingBirthday {
+                date: date(2026, 6, 11),
+                member: member(3, None, "Carol"),
+            },
+        ];
+
+        let message = soon_message(today, 15, &upcoming);
+
+        assert_eq!(
+            message,
+            "Birthdays in the next 15 days:\n\
+             🎂 06 June — Alice (today! 🎉)\n\
+             🎂 07 June — Bob (tomorrow)\n\
+             🎂 11 June — Carol (in 5 days)"
+        );
     }
 }
 
@@ -375,6 +523,15 @@ async fn post_birthday_wishes(
         return Ok(());
     }
 
+    bot.send_message(chat_id, birthday_message(&celebrants))
+        .parse_mode(ParseMode::Html)
+        .await?;
+    Ok(())
+}
+
+/// The daily greeting, pinging every celebrant: an @mention for members with
+/// a username, an HTML text mention for the rest (hence HTML parse mode).
+fn birthday_message(celebrants: &[ChatMemberInfo]) -> String {
     let mentions: Vec<String> = celebrants
         .iter()
         .map(|member| match &member.username {
@@ -382,12 +539,5 @@ async fn post_birthday_wishes(
             None => html::user_mention(UserId(member.telegram_id), &member.full_name),
         })
         .collect();
-
-    bot.send_message(
-        chat_id,
-        format!("🎉 Happy birthday, {}! 🎂🎈", mentions.join(", ")),
-    )
-    .parse_mode(ParseMode::Html)
-    .await?;
-    Ok(())
+    format!("🎉 Happy birthday, {}! 🎂🎈", mentions.join(", "))
 }
