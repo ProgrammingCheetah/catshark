@@ -70,6 +70,18 @@ impl UserRepository for InMemoryUserRepository {
         }
         Ok(())
     }
+
+    async fn remove_birthday(
+        &self,
+        telegram_id: u64,
+    ) -> Result<bool, domain::elements::RepositoryError> {
+        let mut users = self.users.write().unwrap();
+        let key = users
+            .iter()
+            .find(|(_, user)| user.telegram_id == telegram_id)
+            .map(|(key, _)| *key);
+        Ok(key.is_some_and(|key| users.remove(&key).is_some()))
+    }
 }
 
 #[cfg(test)]
@@ -134,5 +146,16 @@ mod tests {
 
         let ids: Vec<u64> = found.iter().map(|(_, user)| user.telegram_id).collect();
         assert_eq!(ids, vec![1, 2]);
+    }
+
+    #[tokio::test]
+    async fn remove_deletes_the_birthday_and_reports_whether_it_existed() {
+        let repo = InMemoryUserRepository::new();
+        repo.add_birthday(1, date(2000, 6, 6)).await.unwrap();
+
+        assert!(repo.remove_birthday(1).await.unwrap());
+        assert!(repo.find_birthdays_for_date(date(2026, 6, 6)).await.unwrap().is_empty());
+
+        assert!(!repo.remove_birthday(1).await.unwrap());
     }
 }

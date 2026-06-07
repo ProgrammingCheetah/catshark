@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use application::service::{
-    AddBirthdayError, Added, BirthdayService, ChatError, ChatMemberInfo, ChatPort,
-    DEFAULT_SOON_DAYS, MAX_SOON_DAYS, Target, parse_birthday,
+    Added, BirthdayError, BirthdayService, ChatError, ChatMemberInfo, ChatPort,
+    DEFAULT_SOON_DAYS, MAX_SOON_DAYS, Removed, Target, parse_birthday,
 };
 use chrono::{NaiveTime, Utc};
 use persistence::inmemory::InMemoryUserRepository;
@@ -19,6 +19,8 @@ type Service = Arc<BirthdayService<InMemoryUserRepository, TelegramChat>>;
 enum Command {
     #[command(description = "add a birthday: /add_birthday MM-DD [@username]")]
     AddBirthday(String),
+    #[command(description = "remove a birthday: /remove_birthday [@username]")]
+    RemoveBirthday(String),
     #[command(description = "show upcoming birthdays: /soon [days] (default 15)")]
     Soon(String),
     #[command(description = "show this help")]
@@ -132,6 +134,7 @@ async fn handle_command(
     record_sender(&msg, &service);
     match cmd {
         Command::AddBirthday(args) => handle_add_birthday(bot, msg, args, service).await,
+        Command::RemoveBirthday(args) => handle_remove_birthday(bot, msg, args, service).await,
         Command::Soon(args) => handle_soon(bot, msg, args, service).await,
         Command::Help => {
             bot.send_message(msg.chat.id, Command::descriptions().to_string())
@@ -139,6 +142,27 @@ async fn handle_command(
             Ok(())
         }
     }
+}
+
+/// Interprets the non-date part of a command as who it acts on. A text
+/// mention (users without a username) carries the user directly; otherwise
+/// the raw @username is passed on for resolution.
+fn parse_target(msg: &Message, target_str: &str) -> Option<Target> {
+    if target_str.is_empty() {
+        return None;
+    }
+    let mentioned = msg
+        .entities()
+        .unwrap_or_default()
+        .iter()
+        .find_map(|entity| match &entity.kind {
+            MessageEntityKind::TextMention { user } => Some(Target::User {
+                telegram_id: user.id.0,
+                name: user.full_name(),
+            }),
+            _ => None,
+        });
+    Some(mentioned.unwrap_or_else(|| Target::Username(target_str.to_string())))
 }
 
 async fn handle_add_birthday(
@@ -166,24 +190,7 @@ async fn handle_add_birthday(
         return Ok(());
     };
 
-    let target = if target_str.is_empty() {
-        None
-    } else {
-        // A text mention (users without a username) carries the user directly;
-        // otherwise pass the raw @username on for resolution.
-        let mentioned = msg
-            .entities()
-            .unwrap_or_default()
-            .iter()
-            .find_map(|entity| match &entity.kind {
-                MessageEntityKind::TextMention { user } => Some(Target::User {
-                    telegram_id: user.id.0,
-                    name: user.full_name(),
-                }),
-                _ => None,
-            });
-        Some(mentioned.unwrap_or_else(|| Target::Username(target_str.to_string())))
-    };
+    let target = parse_target(&msg, target_str);
 
     let reply = match service.add_birthday(from.id.0, target, birthdate).await {
         Ok(Added::ForSelf) => {
@@ -192,18 +199,51 @@ async fn handle_add_birthday(
         Ok(Added::ForOther { name }) => {
             format!("Saved {name}'s birthday: {} 🎂", birthdate.format("%d %B"))
         }
-        Err(AddBirthdayError::UnknownUsername(raw)) => {
+        Err(BirthdayError::UnknownUsername(raw)) => {
             format!("I don't know who {raw} is yet — they need to send a message in the chat first.")
         }
-        Err(AddBirthdayError::NotInChat(name)) => {
+        Err(BirthdayError::NotInChat(name)) => {
             format!("{name} doesn't seem to be in the chat.")
         }
-        Err(AddBirthdayError::NotAdmin) => "Only chat admins can add birthdays for other people. \
+        Err(BirthdayError::NotAdmin) => "Only chat admins can add birthdays for other people. \
              You can add your own with /add_birthday MM-DD"
             .to_string(),
         Err(err) => {
             log::error!("failed to save birthday: {err}");
             "Something went wrong saving the birthday.".to_string()
+        }
+    };
+    bot.send_message(msg.chat.id, reply).await?;
+    Ok(())
+}
+
+async fn handle_remove_birthday(
+    bot: Bot,
+    msg: Message,
+    args: String,
+    service: Service,
+) -> ResponseResult<()> {
+    let Some(from) = msg.from.as_ref() else {
+        return Ok(());
+    };
+    let target = parse_target(&msg, args.trim());
+
+    let reply = match service.remove_birthday(from.id.0, target).await {
+        Ok(Removed::ForSelf { existed: true }) => "Removed your birthday.".to_string(),
+        Ok(Removed::ForSelf { existed: false }) => "You don't have a birthday saved.".to_string(),
+        Ok(Removed::ForOther { name, existed: true }) => format!("Removed {name}'s birthday."),
+        Ok(Removed::ForOther { name, existed: false }) => {
+            format!("{name} doesn't have a birthday saved.")
+        }
+        Err(BirthdayError::UnknownUsername(raw)) => {
+            format!("I don't know who {raw} is yet — they need to send a message in the chat first.")
+        }
+        Err(BirthdayError::NotAdmin) => "Only chat admins can remove birthdays for other people. \
+             You can remove your own with /remove_birthday"
+            .to_string(),
+        Err(err) => {
+            log::error!("failed to remove birthday: {err}");
+            "Something went wrong removing the birthday.".to_string()
         }
     };
     bot.send_message(msg.chat.id, reply).await?;

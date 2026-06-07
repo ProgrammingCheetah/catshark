@@ -66,6 +66,8 @@ pub trait UserRepository {
         telegram_id: u64,
         birthday: NaiveDate,
     ) -> Result<(), RepositoryError>;
+    /// Removes the stored birthday for `telegram_id`. Returns whether one existed.
+    async fn remove_birthday(&self, telegram_id: u64) -> Result<bool, RepositoryError>;
 }
 
 #[cfg(test)]

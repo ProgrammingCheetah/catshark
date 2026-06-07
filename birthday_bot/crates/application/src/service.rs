@@ -54,13 +54,19 @@ pub enum Added {
     ForOther { name: String },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Removed {
+    ForSelf { existed: bool },
+    ForOther { name: String, existed: bool },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum AddBirthdayError {
+pub enum BirthdayError {
     #[error("unknown username {0}")]
     UnknownUsername(String),
     #[error("{0} is not in the chat")]
     NotInChat(String),
-    #[error("only admins may add birthdays for others")]
+    #[error("only admins may manage birthdays for others")]
     NotAdmin,
     #[error(transparent)]
     Repository(#[from] RepositoryError),
@@ -103,19 +109,14 @@ where
             .insert(username.to_lowercase(), telegram_id);
     }
 
-    /// Adds a birthday for the actor themselves (no target) or, if the actor
-    /// is a chat admin, for another chat member.
-    pub async fn add_birthday(
+    /// Resolves a target to a Telegram ID and display name, enforcing that
+    /// only chat admins may act on someone other than themselves. A failed
+    /// admin lookup fails closed.
+    async fn resolve_target(
         &self,
         actor_id: u64,
-        target: Option<Target>,
-        birthdate: NaiveDate,
-    ) -> Result<Added, AddBirthdayError> {
-        let Some(target) = target else {
-            self.repo.add_birthday(actor_id, birthdate).await?;
-            return Ok(Added::ForSelf);
-        };
-
+        target: Target,
+    ) -> Result<(u64, String), BirthdayError> {
         let (telegram_id, name) = match target {
             Target::User { telegram_id, name } => (telegram_id, name),
             Target::Username(raw) => {
@@ -126,19 +127,34 @@ where
                     .unwrap()
                     .get(&username)
                     .copied()
-                    .ok_or(AddBirthdayError::UnknownUsername(raw))?;
+                    .ok_or(BirthdayError::UnknownUsername(raw))?;
                 (id, format!("@{username}"))
             }
         };
 
-        // Members may only add their own birthday; admins can add anyone's.
-        // A failed admin lookup fails closed.
         if telegram_id != actor_id && !self.chat.is_admin(actor_id).await.unwrap_or(false) {
-            return Err(AddBirthdayError::NotAdmin);
+            return Err(BirthdayError::NotAdmin);
         }
+        Ok((telegram_id, name))
+    }
+
+    /// Adds a birthday for the actor themselves (no target) or, if the actor
+    /// is a chat admin, for another chat member.
+    pub async fn add_birthday(
+        &self,
+        actor_id: u64,
+        target: Option<Target>,
+        birthdate: NaiveDate,
+    ) -> Result<Added, BirthdayError> {
+        let Some(target) = target else {
+            self.repo.add_birthday(actor_id, birthdate).await?;
+            return Ok(Added::ForSelf);
+        };
+
+        let (telegram_id, name) = self.resolve_target(actor_id, target).await?;
 
         if self.chat.present_member(telegram_id).await?.is_none() {
-            return Err(AddBirthdayError::NotInChat(name));
+            return Err(BirthdayError::NotInChat(name));
         }
 
         self.repo.add_birthday(telegram_id, birthdate).await?;
@@ -146,6 +162,29 @@ where
             Added::ForSelf
         } else {
             Added::ForOther { name }
+        })
+    }
+
+    /// Removes the actor's own birthday (no target) or, if the actor is a
+    /// chat admin, someone else's. Unlike adding, the target does not have to
+    /// be in the chat: cleaning up after departed members is the point.
+    pub async fn remove_birthday(
+        &self,
+        actor_id: u64,
+        target: Option<Target>,
+    ) -> Result<Removed, BirthdayError> {
+        let Some(target) = target else {
+            let existed = self.repo.remove_birthday(actor_id).await?;
+            return Ok(Removed::ForSelf { existed });
+        };
+
+        let (telegram_id, name) = self.resolve_target(actor_id, target).await?;
+
+        let existed = self.repo.remove_birthday(telegram_id).await?;
+        Ok(if telegram_id == actor_id {
+            Removed::ForSelf { existed }
+        } else {
+            Removed::ForOther { name, existed }
         })
     }
 
@@ -302,7 +341,7 @@ mod tests {
             .add_birthday(ALICE, Some(Target::Username("@bob".into())), birthday(6, 6))
             .await;
 
-        assert_eq!(result, Err(AddBirthdayError::NotAdmin));
+        assert_eq!(result, Err(BirthdayError::NotAdmin));
     }
 
     #[tokio::test]
@@ -341,7 +380,7 @@ mod tests {
             .add_birthday(ALICE, Some(Target::Username("@bob".into())), birthday(6, 6))
             .await;
 
-        assert_eq!(result, Err(AddBirthdayError::UnknownUsername("@bob".into())));
+        assert_eq!(result, Err(BirthdayError::UnknownUsername("@bob".into())));
     }
 
     #[tokio::test]
@@ -367,7 +406,7 @@ mod tests {
             .add_birthday(ALICE, Some(Target::Username("@carol".into())), birthday(6, 6))
             .await;
 
-        assert_eq!(result, Err(AddBirthdayError::NotInChat("@carol".into())));
+        assert_eq!(result, Err(BirthdayError::NotInChat("@carol".into())));
     }
 
     #[tokio::test]
@@ -392,6 +431,54 @@ mod tests {
 
         assert!(service.todays_celebrants(date(2026, 6, 6)).await.unwrap().is_empty());
         assert_eq!(service.todays_celebrants(date(2026, 7, 7)).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn member_removes_their_own_birthday() {
+        let service = service(alice_and_bob());
+        service.add_birthday(ALICE, None, birthday(6, 6)).await.unwrap();
+
+        let removed = service.remove_birthday(ALICE, None).await.unwrap();
+
+        assert_eq!(removed, Removed::ForSelf { existed: true });
+        assert!(service.todays_celebrants(date(2026, 6, 6)).await.unwrap().is_empty());
+
+        // Removing again reports there was nothing to remove.
+        let removed = service.remove_birthday(ALICE, None).await.unwrap();
+        assert_eq!(removed, Removed::ForSelf { existed: false });
+    }
+
+    #[tokio::test]
+    async fn member_cannot_remove_for_someone_else() {
+        let service = service(alice_and_bob());
+        service.record_username("bob", BOB);
+        service.add_birthday(BOB, None, birthday(6, 6)).await.unwrap();
+
+        let result = service
+            .remove_birthday(ALICE, Some(Target::Username("@bob".into())))
+            .await;
+
+        assert_eq!(result, Err(BirthdayError::NotAdmin));
+    }
+
+    #[tokio::test]
+    async fn admin_removes_for_a_member_who_left() {
+        const CAROL: u64 = 3;
+        // Carol saved a birthday, then left the chat.
+        let repo = InMemoryUserRepository::new();
+        repo.add_birthday(CAROL, birthday(6, 6)).await.unwrap();
+        let service = BirthdayService::new(repo, alice_and_bob().with_admin(ALICE));
+        service.record_username("carol", CAROL);
+
+        let removed = service
+            .remove_birthday(ALICE, Some(Target::Username("@carol".into())))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            removed,
+            Removed::ForOther { name: "@carol".into(), existed: true }
+        );
     }
 
     #[tokio::test]
