@@ -14,7 +14,7 @@ use teloxide::{ApiError, RequestError};
 
 type Service = Arc<BirthdayService<SqliteStore, TelegramChat>>;
 
-#[derive(BotCommands, Clone)]
+#[derive(BotCommands, Clone, Debug)]
 #[command(rename_rule = "snake_case", description = "Birthday bot commands:")]
 enum Command {
     #[command(description = "add a birthday: /add_birthday MM-DD [@username]")]
@@ -70,8 +70,16 @@ impl ChatPort for TelegramChat {
 async fn main() {
     // Load a .env file if present; real environment variables take precedence.
     dotenvy::dotenv().ok();
-    pretty_env_logger::init();
-    log::info!("Starting birthday bot...");
+    // Default to info so a deployed bot is observable out of the box;
+    // RUST_LOG takes full control (e.g. RUST_LOG=debug for decisions + SQL).
+    // The `log` records of dependencies (teloxide, sqlx) are captured too.
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
+    tracing::info!(version = env!("CARGO_PKG_VERSION"), "starting birthday bot");
 
     // Reads the token from TELOXIDE_TOKEN.
     let bot = Bot::from_env();
@@ -86,6 +94,7 @@ async fn main() {
     let store = SqliteStore::open(&db_path)
         .await
         .expect("failed to open the birthday database");
+    tracing::info!(chat_id = chat_id.0, db_path, "configuration loaded");
 
     let service: Service = Arc::new(BirthdayService::new(
         store.clone(),
@@ -97,7 +106,7 @@ async fn main() {
 
     // Register the command list so Telegram offers "/" autocompletion.
     if let Err(err) = bot.set_my_commands(Command::bot_commands()).await {
-        log::warn!("failed to register bot commands: {err}");
+        tracing::warn!(error = %err, "failed to register bot commands");
     }
 
     tokio::spawn(birthday_scheduler(
@@ -116,12 +125,14 @@ async fn main() {
         // Observe every other message so we can resolve @usernames later.
         .branch(Update::filter_message().endpoint(observe_message));
 
+    tracing::info!("dispatcher starting (long polling)");
     Dispatcher::builder(bot, handler)
         .dependencies(dptree::deps![service])
         .enable_ctrlc_handler()
         .build()
         .dispatch()
         .await;
+    tracing::info!("dispatcher stopped, shutting down");
 }
 
 async fn record_sender(msg: &Message, service: &Service) {
@@ -129,7 +140,7 @@ async fn record_sender(msg: &Message, service: &Service) {
         && let Some(username) = user.username.as_ref()
         && let Err(err) = service.record_username(username, user.id.0).await
     {
-        log::warn!("failed to record username for {}: {err}", user.id);
+        tracing::warn!(user_id = user.id.0, error = %err, "failed to record username");
     }
 }
 
@@ -138,6 +149,14 @@ async fn observe_message(msg: Message, service: Service) -> ResponseResult<()> {
     Ok(())
 }
 
+#[tracing::instrument(
+    skip_all,
+    fields(
+        chat_id = msg.chat.id.0,
+        user_id = msg.from.as_ref().map(|user| user.id.0),
+        command = ?cmd,
+    )
+)]
 async fn handle_command(
     bot: Bot,
     msg: Message,
@@ -150,10 +169,12 @@ async fn handle_command(
         Command::RemoveBirthday(args) => handle_remove_birthday(bot, msg, args, service).await,
         Command::Soon(args) => handle_soon(bot, msg, args, service).await,
         Command::Ping => {
+            tracing::debug!("ping");
             bot.send_message(msg.chat.id, "pong 🏓").await?;
             Ok(())
         }
         Command::Help => {
+            tracing::debug!("help requested");
             bot.send_message(msg.chat.id, Command::descriptions().to_string())
                 .await?;
             Ok(())
@@ -195,6 +216,7 @@ async fn handle_add_birthday(
     };
 
     let Some(birthdate) = parse_birthday(date_str) else {
+        tracing::debug!(date_str, "unparseable birthday, replying with usage");
         bot.send_message(
             msg.chat.id,
             "Please use the format: /add_birthday MM-DD [@username]",
@@ -229,7 +251,7 @@ async fn handle_add_birthday(
              You can add your own with /add_birthday MM-DD"
             .to_string(),
         Err(err) => {
-            log::error!("failed to save birthday: {err}");
+            tracing::error!(error = %err, "failed to save birthday");
             "Something went wrong saving the birthday.".to_string()
         }
     };
@@ -262,7 +284,7 @@ async fn handle_remove_birthday(
              You can remove your own with /remove_birthday"
             .to_string(),
         Err(err) => {
-            log::error!("failed to remove birthday: {err}");
+            tracing::error!(error = %err, "failed to remove birthday");
             "Something went wrong removing the birthday.".to_string()
         }
     };
@@ -278,6 +300,7 @@ async fn handle_soon(bot: Bot, msg: Message, args: String, service: Service) -> 
         match args.parse::<u32>() {
             Ok(days) => days.min(MAX_SOON_DAYS),
             Err(_) => {
+                tracing::debug!(args, "unparseable horizon, replying with usage");
                 bot.send_message(msg.chat.id, "Please use the format: /soon [days]")
                     .await?;
                 return Ok(());
@@ -289,7 +312,7 @@ async fn handle_soon(bot: Bot, msg: Message, args: String, service: Service) -> 
     let upcoming = match service.upcoming_birthdays(today, days).await {
         Ok(upcoming) => upcoming,
         Err(err) => {
-            log::error!("failed to look up upcoming birthdays: {err}");
+            tracing::error!(error = %err, "failed to look up upcoming birthdays");
             bot.send_message(msg.chat.id, "Something went wrong looking up birthdays.")
                 .await?;
             return Ok(());
@@ -335,6 +358,7 @@ async fn birthday_scheduler(bot: Bot, service: Service, store: SqliteStore, chat
         .and_then(|hour| hour.parse().ok())
         .unwrap_or(9);
     let target_time = NaiveTime::from_hms_opt(hour, 0, 0).expect("BIRTHDAY_HOUR_UTC must be 0-23");
+    tracing::info!(hour, "birthday scheduler running");
 
     loop {
         let now = Utc::now();
@@ -342,25 +366,26 @@ async fn birthday_scheduler(bot: Bot, service: Service, store: SqliteStore, chat
         let announced = match store.last_announced().await {
             Ok(date) => date,
             Err(err) => {
-                log::warn!("failed to read the last announcement date: {err}");
+                tracing::warn!(error = %err, "failed to read the last announcement date");
                 None
             }
         };
         if announcement_due(now, target_time, announced) {
+            tracing::debug!(?announced, "announcement is due");
             match post_birthday_wishes(&bot, &service, chat_id).await {
                 Ok(()) => {
                     if let Err(err) = store.set_last_announced(now.date_naive()).await {
-                        log::warn!("failed to record the announcement date: {err}");
+                        tracing::warn!(error = %err, "failed to record the announcement date");
                     }
                 }
-                Err(err) => log::error!("failed to post birthday wishes: {err}"),
+                Err(err) => tracing::error!(error = %err, "failed to post birthday wishes"),
             }
         }
 
         // Always sleep to the next boundary; the check above decides whether
         // anything is due when we wake.
         let next_run = next_wakeup(now, target_time);
-        log::info!("next birthday check at {next_run}");
+        tracing::info!(%next_run, "sleeping until the next birthday check");
         tokio::time::sleep((next_run - now).to_std().unwrap_or_default()).await;
     }
 }
@@ -401,10 +426,12 @@ async fn post_birthday_wishes(
     let celebrants = service.todays_celebrants(today).await?;
 
     if celebrants.is_empty() {
-        log::info!("no birthdays to celebrate today");
+        tracing::info!(%today, "no birthdays to celebrate today");
         return Ok(());
     }
 
+    let celebrant_ids: Vec<u64> = celebrants.iter().map(|member| member.telegram_id).collect();
+    tracing::info!(%today, ?celebrant_ids, "posting birthday wishes");
     bot.send_message(chat_id, birthday_message(&celebrants))
         .parse_mode(ParseMode::Html)
         .await?;

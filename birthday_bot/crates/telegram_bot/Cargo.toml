@@ -10,6 +10,6 @@ chrono = { workspace = true }
 async-trait = { workspace = true }
 teloxide = { workspace = true }
 tokio = { workspace = true }
-log = { workspace = true }
-pretty_env_logger = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 dotenvy = { workspace = true }

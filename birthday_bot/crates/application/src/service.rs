@@ -99,6 +99,7 @@ where
         username: &str,
         telegram_id: u64,
     ) -> Result<(), RepositoryError> {
+        tracing::trace!(username, telegram_id, "recording username");
         self.repo
             .record_username(&username.to_lowercase(), telegram_id)
             .await
@@ -116,17 +117,26 @@ where
             Target::User { telegram_id, name } => (telegram_id, name),
             Target::Username(raw) => {
                 let username = raw.trim_start_matches('@').to_lowercase();
-                let id = self
-                    .repo
-                    .resolve_username(&username)
-                    .await?
-                    .ok_or(BirthdayError::UnknownUsername(raw))?;
+                let Some(id) = self.repo.resolve_username(&username).await? else {
+                    tracing::debug!(username, "target username is not in the directory");
+                    return Err(BirthdayError::UnknownUsername(raw));
+                };
                 (id, format!("@{username}"))
             }
         };
 
-        if telegram_id != actor_id && !self.chat.is_admin(actor_id).await.unwrap_or(false) {
-            return Err(BirthdayError::NotAdmin);
+        if telegram_id != actor_id {
+            let is_admin = match self.chat.is_admin(actor_id).await {
+                Ok(is_admin) => is_admin,
+                Err(err) => {
+                    tracing::warn!(actor_id, error = %err, "admin lookup failed, denying (fail closed)");
+                    false
+                }
+            };
+            if !is_admin {
+                tracing::info!(actor_id, target_id = telegram_id, "denied: not an admin");
+                return Err(BirthdayError::NotAdmin);
+            }
         }
         Ok((telegram_id, name))
     }
@@ -135,6 +145,7 @@ where
     /// is a chat admin, for another chat member. Either way the person whose
     /// birthday it is must be in the chat — strangers messaging the bot
     /// directly should not end up in the database.
+    #[tracing::instrument(skip(self))]
     pub async fn add_birthday(
         &self,
         actor_id: u64,
@@ -143,19 +154,23 @@ where
     ) -> Result<Added, BirthdayError> {
         let Some(target) = target else {
             if self.chat.present_member(actor_id).await?.is_none() {
+                tracing::info!(actor_id, "denied: actor is not in the chat");
                 return Err(BirthdayError::ActorNotInChat);
             }
             self.repo.add_birthday(actor_id, birthdate).await?;
+            tracing::info!(telegram_id = actor_id, %birthdate, "saved birthday");
             return Ok(Added::ForSelf);
         };
 
         let (telegram_id, name) = self.resolve_target(actor_id, target).await?;
 
         if self.chat.present_member(telegram_id).await?.is_none() {
+            tracing::info!(target_id = telegram_id, "denied: target is not in the chat");
             return Err(BirthdayError::NotInChat(name));
         }
 
         self.repo.add_birthday(telegram_id, birthdate).await?;
+        tracing::info!(telegram_id, %birthdate, "saved birthday");
         Ok(if telegram_id == actor_id {
             Added::ForSelf
         } else {
@@ -166,6 +181,7 @@ where
     /// Removes the actor's own birthday (no target) or, if the actor is a
     /// chat admin, someone else's. Unlike adding, the target does not have to
     /// be in the chat: cleaning up after departed members is the point.
+    #[tracing::instrument(skip(self))]
     pub async fn remove_birthday(
         &self,
         actor_id: u64,
@@ -173,12 +189,14 @@ where
     ) -> Result<Removed, BirthdayError> {
         let Some(target) = target else {
             let existed = self.repo.remove_birthday(actor_id).await?;
+            tracing::info!(telegram_id = actor_id, existed, "removed birthday");
             return Ok(Removed::ForSelf { existed });
         };
 
         let (telegram_id, name) = self.resolve_target(actor_id, target).await?;
 
         let existed = self.repo.remove_birthday(telegram_id).await?;
+        tracing::info!(telegram_id, existed, "removed birthday");
         Ok(if telegram_id == actor_id {
             Removed::ForSelf { existed }
         } else {
@@ -188,6 +206,7 @@ where
 
     /// Chat members with a birthday within `from..=from + days`, soonest
     /// first. Users who are no longer in the chat are skipped.
+    #[tracing::instrument(skip(self))]
     pub async fn upcoming_birthdays(
         &self,
         from: NaiveDate,
@@ -203,11 +222,13 @@ where
                 result.push(UpcomingBirthday { date, member });
             }
         }
+        tracing::debug!(count = result.len(), "resolved upcoming birthdays");
         Ok(result)
     }
 
     /// Chat members whose birthday is celebrated today. Users who are no
     /// longer in the chat are skipped.
+    #[tracing::instrument(skip(self))]
     pub async fn todays_celebrants(
         &self,
         today: NaiveDate,
@@ -219,6 +240,7 @@ where
                 result.push(member);
             }
         }
+        tracing::debug!(count = result.len(), "resolved today's celebrants");
         Ok(result)
     }
 
@@ -226,11 +248,11 @@ where
         match self.chat.present_member(telegram_id).await {
             Ok(Some(member)) => Some(member),
             Ok(None) => {
-                log::info!("user {telegram_id} is no longer in the chat, skipping");
+                tracing::info!(telegram_id, "user is no longer in the chat, skipping");
                 None
             }
             Err(err) => {
-                log::warn!("chat lookup failed for {telegram_id}, skipping: {err}");
+                tracing::warn!(telegram_id, error = %err, "chat lookup failed, skipping");
                 None
             }
         }

@@ -8,7 +8,7 @@ domain = { path = "../domain" }
 chrono = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
-log = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 persistence = { path = "../persistence" }

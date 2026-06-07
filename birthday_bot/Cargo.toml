@@ -10,6 +10,6 @@ async-trait = { version = "0.1.89" }
 sqlx = { version = "0.9", default-features = false, features = ["sqlite", "runtime-tokio", "chrono"] }
 teloxide = { version = "0.17.0", features = ["macros"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-log = { version = "0.4" }
-pretty_env_logger = { version = "0.5" }
+tracing = { version = "0.1" }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 dotenvy = { version = "0.15" }

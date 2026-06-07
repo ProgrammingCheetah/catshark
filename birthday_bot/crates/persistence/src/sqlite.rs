@@ -34,7 +34,9 @@ impl SqliteStore {
         let pool = SqlitePool::connect_with(options)
             .await
             .map_err(storage_error)?;
-        Self::from_pool(pool).await
+        let store = Self::from_pool(pool).await?;
+        tracing::info!(path, "opened birthday database");
+        Ok(store)
     }
 
     /// An ephemeral store, for tests. The pool is pinned to a single
