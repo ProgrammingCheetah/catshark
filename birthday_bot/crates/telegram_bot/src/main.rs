@@ -23,6 +23,8 @@ enum Command {
     RemoveBirthday(String),
     #[command(description = "show upcoming birthdays: /soon [days] (default 15)")]
     Soon(String),
+    #[command(description = "post today's birthday wishes now")]
+    Celebrate,
     #[command(description = "check that the bot is alive")]
     Ping,
     #[command(description = "show this help")]
@@ -183,6 +185,7 @@ async fn handle_command(
         Command::AddBirthday(args) => handle_add_birthday(bot, msg, args, service).await,
         Command::RemoveBirthday(args) => handle_remove_birthday(bot, msg, args, service).await,
         Command::Soon(args) => handle_soon(bot, msg, args, service).await,
+        Command::Celebrate => handle_celebrate(bot, msg, service).await,
         Command::Ping => {
             bot.send_message(msg.chat.id, "pong 🏓").await?;
             // The send succeeded, so the probe round-trip is confirmed.
@@ -339,6 +342,32 @@ async fn handle_soon(bot: Bot, msg: Message, args: String, service: Service) -> 
     Ok(())
 }
 
+/// `/celebrate`: posts today's birthday wishes on demand, in the chat the
+/// command came from. Independent of the daily greeting — it neither waits
+/// for the hour nor marks the day as announced.
+async fn handle_celebrate(bot: Bot, msg: Message, service: Service) -> ResponseResult<()> {
+    let today = Utc::now().date_naive();
+    let celebrants = match service.todays_celebrants(today).await {
+        Ok(celebrants) => celebrants,
+        Err(err) => {
+            tracing::error!(error = %err, "failed to look up today's celebrants");
+            bot.send_message(msg.chat.id, "Something went wrong looking up birthdays.")
+                .await?;
+            return Ok(());
+        }
+    };
+
+    if celebrants.is_empty() {
+        tracing::info!(%today, "no birthdays to celebrate today");
+        bot.send_message(msg.chat.id, "No birthdays to celebrate today.")
+            .await?;
+        return Ok(());
+    }
+
+    send_birthday_wishes(&bot, msg.chat.id, today, &celebrants).await?;
+    Ok(())
+}
+
 /// The `/soon` reply. Plain names on purpose: a list shouldn't ping everyone
 /// in it.
 fn soon_message(today: NaiveDate, days: u32, upcoming: &[UpcomingBirthday]) -> String {
@@ -445,11 +474,41 @@ async fn post_birthday_wishes(
         return Ok(());
     }
 
+    send_birthday_wishes(bot, chat_id, today, &celebrants).await?;
+    Ok(())
+}
+
+/// Sends the greeting and confirms the round-trip in the log; a failed send
+/// surfaces as an error at the caller, so the absence of the confirmation
+/// line always has a matching error line.
+async fn send_birthday_wishes(
+    bot: &Bot,
+    chat_id: ChatId,
+    today: NaiveDate,
+    celebrants: &[ChatMemberInfo],
+) -> Result<(), RequestError> {
     let celebrant_ids: Vec<u64> = celebrants.iter().map(|member| member.telegram_id).collect();
     tracing::info!(%today, ?celebrant_ids, "posting birthday wishes");
-    bot.send_message(chat_id, birthday_message(&celebrants))
+    let sent = bot
+        .send_message(chat_id, birthday_message(celebrants))
         .parse_mode(ParseMode::Html)
         .await?;
+    // The send succeeded; the message is in the chat.
+    tracing::info!(message_id = sent.id.0, "birthday wishes posted");
+
+    // Pin quietly so the wishes stay visible without pinging the chat again.
+    // Pinning needs the bot to be an admin with the pin right; the wishes are
+    // already posted, so a failure is only worth a warning, not an error.
+    match bot
+        .pin_chat_message(chat_id, sent.id)
+        .disable_notification(true)
+        .await
+    {
+        Ok(_) => tracing::info!(message_id = sent.id.0, "birthday wishes pinned"),
+        Err(err) => {
+            tracing::warn!(message_id = sent.id.0, error = %err, "failed to pin the birthday wishes")
+        }
+    }
     Ok(())
 }
 

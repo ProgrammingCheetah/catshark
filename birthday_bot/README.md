@@ -14,6 +14,7 @@ are celebrated on Feb 28 in non-leap years.
 | `/add_birthday MM-DD [@username]` | Save your birthday — or, as a chat admin, someone else's |
 | `/remove_birthday [@username]` | Remove your birthday — or, as a chat admin, someone else's |
 | `/soon [days]` | Upcoming birthdays in the next `days` days (default 15) |
+| `/celebrate` | Post today's birthday wishes now (doesn't affect the daily greeting) |
 | `/ping` | Check that the bot is alive |
 | `/help` | Show the command list |
 
@@ -27,6 +28,8 @@ Rules of the house:
 - `@username` targets are resolved from messages the bot has observed; a
   member the bot has never seen post can't be targeted by username yet
   (text mentions of users without a username work directly).
+- Birthday wishes are pinned without a notification, if the bot is an admin
+  with the pin right; without it the wishes still post, just unpinned.
 
 ## Setup
 
